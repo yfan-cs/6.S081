@@ -6,6 +6,40 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 sysinfo_p;  // user pointer to struct sysinfo
+  struct proc *p = myproc();
+  struct sysinfo si;
+
+  si.freemem = count_freemem();
+  si.nproc = count_proc();
+
+  if(argaddr(0, &sysinfo_p) < 0)
+    return -1;
+
+  if(copyout(p->pagetable, sysinfo_p, (char *)&si, sizeof(si)) < 0)
+    return -1;
+
+  return 0;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+  myproc()->trace_mask = mask;
+  // current process is trace mask command args
+  // the trace process is the parent process of the command process
+  // so after modifying fork() to copy the trace mask from the parent
+  // to the child process, we are done.
+  return 0;
+}
 
 uint64
 sys_exit(void)
