@@ -3,6 +3,12 @@ struct rtcdate;
 
 // system calls
 int fork(void);
+/*
+ * This attribute tells the compiler that the function won't ever return, 
+ * and this can be used to suppress errors about code paths not being reached. 
+ * The C library functions abort() and exit() are both declared 
+ * with this attribute
+ */
 int exit(int) __attribute__((noreturn));
 int wait(int*);
 int pipe(int*);
