@@ -127,7 +127,53 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // set up alarm related fields
+  p->alarm_interval = 0;
+  p->alarm_ticks = 0;
+  p->alarm_handler = 0;
+  p->in_alarm_handler = 0;
+
   return p;
+}
+// copy tp2 to tp1
+void
+copy_reg(struct trapframe *tp1, struct trapframe *tp2)
+{
+  tp1->epc = tp2->epc;
+  tp1->ra  = tp2->ra;
+  tp1->sp  = tp2->sp;
+  tp1->gp  = tp2->gp;
+  tp1->tp  = tp2->tp;
+
+  tp1->t0  = tp2->t0;
+  tp1->t1  = tp2->t1;
+  tp1->t2  = tp2->t2;
+  tp1->t3  = tp2->t3;
+  tp1->t4  = tp2->t4;
+  tp1->t5  = tp2->t5;
+  tp1->t6  = tp2->t6;
+
+  tp1->s0  = tp2->s0;
+  tp1->s1  = tp2->s1;
+  tp1->s2  = tp2->s2;
+  tp1->s3  = tp2->s3;
+  tp1->s4  = tp2->s4;
+  tp1->s5  = tp2->s5;
+  tp1->s6  = tp2->s6;
+  tp1->s7  = tp2->s7;
+  tp1->s8  = tp2->s8;
+  tp1->s9  = tp2->s9;
+  tp1->s10 = tp2->s10;
+  tp1->s11 = tp2->s11;
+
+  tp1->a0  = tp2->a0;
+  tp1->a1  = tp2->a1;
+  tp1->a2  = tp2->a2;
+  tp1->a3  = tp2->a3;
+  tp1->a4  = tp2->a4;
+  tp1->a5  = tp2->a5;
+  tp1->a6  = tp2->a6;
+  tp1->a7  = tp2->a7;
 }
 
 // free a proc structure and the data hanging from it,

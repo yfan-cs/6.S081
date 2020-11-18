@@ -82,6 +82,8 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+void copy_reg(struct trapframe*, struct trapframe*);
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -95,10 +97,15 @@ struct proc {
   int pid;                     // Process ID
 
   // these are private to the process, so p->lock need not be held.
+  int alarm_interval;          // alarm interval set by sys_sigalarm
+  int alarm_ticks;             // # of ticks have passed 
+  uint64 alarm_handler;        // function pointer to alarm handler        
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
+  struct trapframe alarm_trapframe;  // store before entering alarm handler
+  int in_alarm_handler;        // whether in execution in alarm handler
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
