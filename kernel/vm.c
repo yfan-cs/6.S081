@@ -15,6 +15,8 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+int refcount[PHYSTOP / PGSIZE];
+
 /*
  * create a direct-map page table for the kernel.
  */
@@ -159,6 +161,11 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+
+    // increment reference count to the physical address
+    int pre_count = get_refcount((char *)pa);
+    set_refcount((char *)pa, pre_count + 1);    
+
     if(a == last)
       break;
     a += PGSIZE;
@@ -186,8 +193,13 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);
+
+    // decrement the reference count to the physical address
+    uint64 pa = PTE2PA(*pte);
+    int pre_count = get_refcount((char *)pa);
+    set_refcount((char *)pa, pre_count - 1);
+
+    if(do_free && pre_count <= 1){
       kfree((void*)pa);
     }
     *pte = 0;
@@ -218,7 +230,10 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
+
   memset(mem, 0, PGSIZE);
+  // set reference count to be 0 here?
+  set_refcount(mem, 0);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
   memmove(mem, src, sz);
 }
@@ -242,6 +257,9 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
+    // see if 0 reference here:
+    set_refcount((void*)mem, 0);
+    // printf("Should be 0 reference: %d\n", get_refcount(mem));
     if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
@@ -301,7 +319,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.
-// Copies both the page table and the
+// COW: Only copies the page table but not the
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
@@ -311,20 +329,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    // clear PTE_W in parent:
+    (*pte) &= (~PTE_W);
+    // set PTE_COW in parent:
+    (*pte) |= PTE_COW;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
   }
@@ -355,12 +372,31 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+    pte_t *pte = walk(pagetable, va0, 0);
+    if (*pte & PTE_COW) {
+      // a COW page
+      char *mem = kalloc();
+      if(mem == 0) 
+        return -1;
+      memmove(mem, (char*)PTE2PA(*pte), PGSIZE);
+
+      // decrement reference count to old pa
+      uint64 pa = PTE2PA(*pte);
+      int pre_count = get_refcount((char *)pa);
+      set_refcount((char *)pa, pre_count - 1);
+      if(pre_count == 1) kfree((void*)pa);
+
+      // install the new page:
+      *pte = PA2PTE((uint64)mem) | PTE_W | PTE_R | PTE_X | PTE_U | PTE_V;
+      // set reference to mem to be 1
+      set_refcount(mem, 1);
+      pa0 = (uint64)mem;
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -439,4 +475,14 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void set_refcount(void * pa, int count) {
+  int index = PGROUNDDOWN((uint64)pa) / PGSIZE;
+  refcount[index] = count;
+}
+
+int get_refcount(void *pa) {
+  int index = PGROUNDDOWN((uint64)pa) / PGSIZE;
+  return refcount[index];
 }

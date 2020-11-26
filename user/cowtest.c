@@ -19,6 +19,7 @@ simpletest()
   
   char *p = sbrk(sz);
   if(p == (char*)0xffffffffffffffffL){
+    // sbrk returns -1
     printf("sbrk(%d) failed\n", sz);
     exit(-1);
   }
@@ -180,6 +181,7 @@ filetest()
 int
 main(int argc, char *argv[])
 {
+  printf("Starts COW Tests\n");
   simpletest();
 
   // check that the first simpletest() freed the physical memory.

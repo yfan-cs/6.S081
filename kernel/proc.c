@@ -563,7 +563,7 @@ sleep(void *chan, struct spinlock *lk)
   // guaranteed that we won't miss any wakeup
   // (wakeup locks p->lock),
   // so it's okay to release lk.
-  if(lk != &p->lock){  //DOC: sleeplock0
+  if(lk != &p->lock){  //DOC: sleeplock0 // lock for the semaphore
     acquire(&p->lock);  //DOC: sleeplock1
     release(lk);
   }

@@ -67,6 +67,42 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 13 || r_scause() == 15){
+    // pagefault
+    uint64 va = r_stval();  // faulting va
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if (pte == 0) { 
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+      exit(-1); 
+    }
+    if ((*pte & PTE_COW) == 0) {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+      exit(-1); 
+    }
+    // now, allocate a new page, copy the old page to the new page
+    // and install the new page with PTE_W set
+    char *mem = kalloc();
+    if(mem == 0) {
+      p->killed = 1;
+      exit(-1);
+    }
+    memmove(mem, (char *)PTE2PA(*pte), PGSIZE);
+
+    // decrement reference count to old pa
+    uint64 pa = PTE2PA(*pte);
+    int pre_count = get_refcount((char *)pa);
+    set_refcount((char *)pa, pre_count - 1);
+    if(pre_count == 1) kfree((void*)pa);    
+
+    // install the new page:
+    *pte = PA2PTE((uint64)mem) | PTE_W | PTE_R | PTE_X | PTE_U | PTE_V;
+    // set reference to mem to be 1
+    set_refcount(mem, 1);
+    
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
