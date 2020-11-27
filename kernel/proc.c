@@ -16,7 +16,8 @@ int nextpid = 1;
 struct spinlock pid_lock;
 
 extern void forkret(void);
-static void wakeup1(struct proc *chan);
+static void wakeup1(struct proc *chan); // A static global var or fun is "seen" only 
+                                        // in the file it's declared in
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
