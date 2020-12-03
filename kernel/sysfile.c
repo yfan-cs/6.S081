@@ -52,6 +52,52 @@ fdalloc(struct file *f)
   return -1;
 }
 
+// create the symbolic link path pointing to target
+// assume sybolic link path doesn't exist.
+uint64
+sys_symlink(void)
+{
+  char name[DIRSIZ], path[MAXPATH], target[MAXPATH];
+  struct inode *dp, *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  if((dp = nameiparent(path, name)) == 0){
+    end_op();
+    return -1;
+  }
+
+  ilock(dp);
+  
+  ip = ialloc(dp->dev, T_SYMLINK);
+  // lock ip
+  ilock(ip);
+  ip->nlink = 1;
+  iupdate(ip);
+
+  if(dirlink(dp, name, ip->inum) < 0){
+    iunlockput(dp);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // write the target path to the data block in ip
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH)
+    panic("symlink: writei");
+  iupdate(ip);
+
+  iunlockput(dp);
+  iunlockput(ip);
+
+  end_op();
+
+  return 0;
+}
+
 uint64
 sys_dup(void)
 {
@@ -125,6 +171,7 @@ sys_link(void)
   if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
     return -1;
 
+  // assume old exists and it is not a directory
   begin_op();
   if((ip = namei(old)) == 0){
     end_op();
@@ -145,6 +192,8 @@ sys_link(void)
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
+  // Write a new directory entry (name, inum) into the directory dp.
+  // dirlink(struct inode *dp, char *name, uint inum)
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -175,7 +224,7 @@ isdirempty(struct inode *dp)
   for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("isdirempty: readi");
-    if(de.inum != 0)
+    if(de.inum != 0 )
       return 0;
   }
   return 1;
@@ -250,6 +299,7 @@ create(char *path, short type, short major, short minor)
   ilock(dp);
 
   if((ip = dirlookup(dp, name, 0)) != 0){
+    // name entry already exists in dir pointed by dp
     iunlockput(dp);
     ilock(ip);
     if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
@@ -268,9 +318,11 @@ create(char *path, short type, short major, short minor)
   iupdate(ip);
 
   if(type == T_DIR){  // Create . and .. entries.
-    dp->nlink++;  // for ".."
+    dp->nlink++;  // for "..", dp is the parent dir ".."
     iupdate(dp);
     // No ip->nlink++ for ".": avoid cyclic ref count.
+
+    // write "." and ".." in dp directory
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       panic("create dots");
   }
@@ -291,6 +343,7 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  int depth = 0;  // depth for the recursive look up for symlinks
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
@@ -325,6 +378,28 @@ sys_open(void)
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  while (depth < 10) {
+    if (ip->type == T_SYMLINK && (omode & (~O_NOFOLLOW))) {
+      depth += 1;
+      // should follow the symlink
+      if (readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH)
+        panic("open: readi"); 
+      iunlockput(ip);
+      if((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+    } else {
+      break;
+    }
+  }
+  if (depth == 10) {
     iunlockput(ip);
     end_op();
     return -1;
