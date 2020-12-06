@@ -8,6 +8,40 @@
 #include "proc.h"
 
 uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  // read in arguments:
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(1, &length) < 0)
+    return -1;
+  if(argint(2, &prot) < 0)
+    return -1;
+  if(argint(3, &flags) < 0)
+    return -1;
+  if(argint(4, &fd) < 0)
+    return -1;
+  if(argint(5, &offset) < 0)
+    return -1;
+  return (uint64)mmap((void*)addr, length, prot, flags, fd, offset);
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  // read in arguments:
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(1, &length) < 0)
+    return -1;
+  return munmap((void*)addr, length);
+}
+
+uint64
 sys_exit(void)
 {
   int n;

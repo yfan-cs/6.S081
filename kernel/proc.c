@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -284,6 +288,18 @@ fork(void)
 
   np->parent = p;
 
+  // copy VMAs
+  for (i = 0; i < 16; i++) {
+    if (p->vma[i].length > 0) {
+      np->vma[i].length = p->vma[i].length;
+      np->vma[i].addr = p->vma[i].addr;
+      np->vma[i].prot = p->vma[i].prot;
+      np->vma[i].flags = p->vma[i].flags;
+      np->vma[i].fp = p->vma[i].fp;
+      filedup(np->vma[i].fp);
+    }
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -305,6 +321,76 @@ fork(void)
   release(&np->lock);
 
   return pid;
+}
+
+void*
+mmap(void *addr, int length, int prot, int flags, int fd, int offset)
+{
+  // assumption addr = 0 and offset = 0
+  if(addr != 0 || offset != 0)
+    panic("mmap assumption invalid!");
+  int i;
+  struct proc *p = myproc();
+  uint sz = PGROUNDUP(p->sz);
+
+  // check if the file permission agrees with prot and flags
+  if (p->ofile[fd]->writable == 0) {
+    // file is read only
+    if ( (prot & PROT_WRITE) && (flags & MAP_SHARED))
+      return (void*)-1;
+  }
+  
+  if((sz = PGROUNDUP(sz + length)) > MAXVA)
+    return (void*)-1;
+  for (i = 0; i < 16; i++) {
+    if (p->vma[i].length == 0) {
+      p->vma[i].length = length;
+      p->vma[i].addr = PGROUNDUP(p->sz);
+      p->sz = sz;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].fp = p->ofile[fd];
+      filedup(p->ofile[fd]); // increment ref count for file fd
+      break;
+    }
+  }
+  if (i == 16)
+    panic("mmap not enough VMA array");
+  
+  return (void*)p->vma[i].addr;
+}
+
+int
+munmap(void *addr, int length)
+{
+  uint from = PGROUNDDOWN((uint64)addr);
+  uint to = PGROUNDUP((uint64)addr + length);
+  struct proc *p = myproc();
+  // unmap va: [from, to)
+  int i, dec_refcount = 0;
+  for (i = 0; i < 16; i++) {
+    if (p->vma[i].addr >= from && p->vma[i].addr < to)
+      break;
+  }
+  if (i == 16)
+    return 0; // no VMA in the specified range, nothing need to be done
+  if (p->vma[i].addr + p->vma[i].length <= to) {
+    dec_refcount = 1; 
+    to = PGROUNDUP(p->vma[i].addr + p->vma[i].length);
+  } 
+  
+  for (uint addr = from; addr < to; addr += PGSIZE) {
+    if (p->vma[i].flags & MAP_SHARED) {
+      if (filewrite(p->vma[i].fp, addr, PGSIZE) < 0)
+        return -1;
+    }
+    uvmunmap(myproc()->pagetable, addr, 1, 1);
+  }
+  p->vma[i].length -= length;
+  if (dec_refcount) {
+    fileclose((p->vma[i]).fp);
+  }
+  return 0;
 }
 
 // Pass p's abandoned children to init.
@@ -350,6 +436,12 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+  // unmap VMAs
+  for(int i = 0; i < 16; i++) {
+    if(p->vma[i].length > 0) {
+      munmap((void*)p->vma[i].addr, p->vma[i].length);
     }
   }
 

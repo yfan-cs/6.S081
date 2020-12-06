@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,6 +70,42 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    // page fault
+    uint64 va = r_stval();
+    // see if this is a mmap page
+    int i;
+    for (i = 0; i < 16; i++) {
+      if (p->vma[i].addr <= va && p->vma[i].addr + p->vma[i].length > va) 
+        break;
+    }
+    if (i == 16) {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;  
+    } else {
+      // need to allocate a physical page, and read from file
+      char *mem = kalloc();
+      if (mem == 0) panic("handling mmapped page fault: not enough pa");
+      memset(mem, 0, PGSIZE);
+      uint64 offset = va - p->vma[i].addr;
+      // read from the file
+      ilock((p->vma[i].fp)->ip);
+      if (readi((p->vma[i].fp)->ip, 0, (uint64)mem, offset, PGSIZE) != PGSIZE)
+        // the remaining file may shorter than PGSIZE
+        printf("Read file size less than PGSIZE\n");
+        // panic("handling mmapped page fault: readi"); 
+      iunlock((p->vma[i].fp)->ip);
+      // map in the pagetable
+      va = PGROUNDDOWN(va);
+      // TODO: use appropriate permissions
+      if (mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_R|PTE_W|PTE_U)!=0) {
+        kfree(mem);
+        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+        p->killed = 1;
+      }
+    } 
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
