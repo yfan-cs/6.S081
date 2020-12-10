@@ -42,7 +42,7 @@ e1000_init(uint32 *xregs)
   // [E1000 14.5] Transmit initialization
   memset(tx_ring, 0, sizeof(tx_ring));
   for (i = 0; i < TX_RING_SIZE; i++) {
-    tx_ring[i].status = E1000_TXD_STAT_DD;
+    tx_ring[i].status = E1000_TXD_STAT_DD; // Descriptor Done
     tx_mbufs[i] = 0;
   }
   regs[E1000_TDBAL] = (uint64) tx_ring;
@@ -95,13 +95,39 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
   // Your code here.
   //
   // the mbuf contains an ethernet frame; program it into
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+  printf("I am in e1000 transmit!\n");
+  acquire(&e1000_lock);
+  int tx_ring_idx = regs[E1000_TDT]; 
+  struct tx_desc *tx = &tx_ring[tx_ring_idx];
+  if (!(tx->status & E1000_TXD_STAT_DD)) {
+    release(&e1000_lock);
+    return -1;
+  }
+  
+  // free the last mbuf that was transmitted from tx descriptor
+  if (tx_mbufs[tx_ring_idx])
+    mbuffree(tx_mbufs[tx_ring_idx]);
+
+  // fill in the tx descriptor, refer to 3.3.3
+  tx->addr = (uint64)m->head;
+  tx->length = (uint16)m->len;
+  tx->cso = 0;
+  tx->status = 0;
+  // fill in cmd (status, css, special may leave to be 0)
+  tx->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  
+  // stash away a pointer to the mbuf for later freeing
+  tx_mbufs[tx_ring_idx] = m;
+
+  // Finally, update the ring position
+  regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   
   return 0;
 }
@@ -115,7 +141,24 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
-}
+  printf("I am in e1000 recv!\n");
+  while(1) {
+    int rx_ring_idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    struct rx_desc *rx = &rx_ring[rx_ring_idx];
+   
+    // check if a new packet is available
+    if(!(rx->status & E1000_RXD_STAT_DD))
+      return;
+
+    rx_mbufs[rx_ring_idx]->len = rx->length;
+    net_rx(rx_mbufs[rx_ring_idx]);
+  
+    rx_mbufs[rx_ring_idx] = mbufalloc(0);
+    rx->addr = (uint64)rx_mbufs[rx_ring_idx]->head;
+    rx->status = 0;
+    regs[E1000_RDT] = rx_ring_idx;
+  }
+ }
 
 void
 e1000_intr(void)
